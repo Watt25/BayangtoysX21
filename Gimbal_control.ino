@@ -1,6 +1,15 @@
 /*  
  *  Bayangtoys X21 BGC Gimbal Control for Ardunio
- *  by kr0k0f4nt (2017) - Version 1.1
+ *  by kr0k0f4nt (2017) - Version 1.3
+ *  
+ *  Version 1.3 (2018-02-13) by Watt
+ *  - In Mode 2 buttons are accelerate the gimbal into the direction of the pressed button
+ *  - When gimbal rotates at max speed, pressing the same button again stops the rotation
+ *  Version 1.2 (2017-10-21)
+ *  - Changed MODE 2 control to Start/Stop on each press on Photo/Video (Up/Down)
+ *    Also reaching the MAX/MIN Angle will stop the movement 
+ *  - Changed default Value for SPEED to 2, to allow smooth Pans with the Gimbal
+ *  - Remove STEPS Settings, as it is not longer required
  *  
  *  Version 1.1 (2017-09-20)
  *  - Added SPEED to SETTINGS to Control MODE 1
@@ -23,8 +32,9 @@
 #define MAX           2000     // Max Angle
 #define STD           1650     // Standard Angle for MODE 1
 #define MIN           1500     // Min Angle
-#define STEP          25       // Steps for MODE 2, 500 = 90 degrees, so 25 is about 5 degrees per Step
-#define SPEED         5        // Speed for MODE 1 when pressing Photo Button, 1 is slowest to 10 fastest
+#define SPEED         2        // Speed for MODE 1 when pressing Photo Button, 1 is slowest to 10 fastest
+#define SPEED1        1        // Speed for MODE 2, 1 is slowest to 10 fastest
+#define SPEED2        3        // Faster speed for MODE 2, 1 is slowest to 10 fastest
 
 /*
  * Interrputs are not available on all Pins, for the Nano only on 2 & 3
@@ -74,6 +84,10 @@ int GimbalState = STD;
 // Variables for MODE 1 Control by Photo Button
 int GimbalSteps = 0; 
 int GimbalLastSteps = SPEED;
+                //   0       1     2     3       4
+int Speeds[5] = {-SPEED2, -SPEED1, 0, SPEED1, SPEED2};
+#define ZEROSPEEDINDEX 2       // Index of zero speed
+int SpeedIndex = ZEROSPEEDINDEX;
 
 // Variables for PPM Processing
 volatile int Values[CHANNELS + 1] = {0};
@@ -198,21 +212,19 @@ void loop(){
       // MODE 2 - Using Photo Button for Step Up / Video Button for Down
 
       if (KeyPressed == SIGNAL_VIDEO) {
-        // Moving the Gimbal downwards ...
-        if (GimbalState + STEP <= MAX) {
-          GimbalState += STEP;
-        } else {
-          GimbalState = MAX;
-        }
+        // Accelerate the Gimbal downwards  (or stop it)...
+        if (++SpeedIndex >= (sizeof(Speeds) / sizeof(int)))
+          SpeedIndex = ZEROSPEEDINDEX;
       } else {
-        // Moving the Gimbal upwards ...
-        if (GimbalState - STEP >= MIN) {
-          GimbalState -= STEP;
-        } else {
-          GimbalState = MIN;
-        }
+        // Accelerate the Gimbal upwards (or stop it)...
+        if (--SpeedIndex < 0)
+          SpeedIndex = ZEROSPEEDINDEX;
       }
-        
+      Serial.print("SpeedIndex: ");
+      Serial.println(SpeedIndex);
+      GimbalSteps = Speeds[SpeedIndex];
+      Serial.print("GimbalSteps: ");
+      Serial.println(GimbalSteps);
     }
 
     // Overwrite Last Signal
@@ -224,9 +236,11 @@ void loop(){
   if (GimbalState + GimbalSteps > MAX) {
     GimbalState = MAX;
     GimbalSteps = 0;
+    SpeedIndex = ZEROSPEEDINDEX;
   } else if (GimbalState + GimbalSteps < MIN) {
     GimbalState = MIN;
     GimbalSteps = 0;
+    SpeedIndex = ZEROSPEEDINDEX;
   } else {
     Gimbal.writeMicroseconds(GimbalState += GimbalSteps);
   }
@@ -249,3 +263,4 @@ void DebugPrintStates(int KeyPressed, int Signal, boolean VideoMode) {
       Serial.println("OFF");
     }  
 }
+
