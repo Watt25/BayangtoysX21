@@ -1,6 +1,14 @@
 /*  
  *  Bayangtoys X21 BGC Gimbal Control for Ardunio
- *  by kr0k0f4nt (2017)
+ *  by kr0k0f4nt (2017) - Version 1.1
+ *  
+ *  Version 1.1 (2017-09-20)
+ *  - Added SPEED to SETTINGS to Control MODE 1
+ *  - Pressing the Video Button will now always set next Movement on Photo Button to upwards
+ *  
+ *  Version 1.0 (2017-09-19)
+ *  - Initial Release
+ *  
  *  PPM Processing based on Code by Sijjim (https://forum.arduino.cc/index.php?topic=182681.0)
  *  Inspired by Muhammad Imam Zulkarnaen (https://www.youtube.com/watch?v=pYitT60Frjc)
  */ 
@@ -15,7 +23,8 @@
 #define MAX           2000     // Max Angle
 #define STD           1650     // Standard Angle for MODE 1
 #define MIN           1500     // Min Angle
-#define STEP          25       // Steps for MODE 2
+#define STEP          25       // Steps for MODE 2, 500 = 90 degrees, so 25 is about 5 degrees per Step
+#define SPEED         5        // Speed for MODE 1 when pressing Photo Button, 1 is slowest to 10 fastest
 
 /*
  * Interrputs are not available on all Pins, for the Nano only on 2 & 3
@@ -64,7 +73,7 @@ int GimbalState = STD;
 
 // Variables for MODE 1 Control by Photo Button
 int GimbalSteps = 0; 
-int GimbalLastSteps = 5;
+int GimbalLastSteps = SPEED;
 
 // Variables for PPM Processing
 volatile int Values[CHANNELS + 1] = {0};
@@ -164,6 +173,9 @@ void loop(){
 
       // Toggle between Standard and Maximum Angle with Video Mode
       if (KeyPressed == SIGNAL_VIDEO) {
+        // Stop current movement and set next direction to upwards
+        GimbalSteps = 0;
+        GimbalLastSteps = SPEED;
         // Video Mode represents the Angles on the Remote, it toggels between MAX and STD Settings
         if (VideoMode) {
           GimbalState = MAX;
