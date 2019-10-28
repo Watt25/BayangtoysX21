@@ -1,7 +1,9 @@
 /*  
  *  Bayangtoys X21 BGC Gimbal Control for Ardunio
- *  by kr0k0f4nt (2017) - Version 1.3
+ *  by kr0k0f4nt (2017) - Version 1.4
  *  
+ *  Version 1.4 (2019-10-28) by Watt
+ *  - PPM signal interpretation is more strict. In case of garbaged signal, it drops the whole cycle.
  *  Version 1.3 (2018-02-13) by Watt
  *  - In Mode 2 buttons are accelerate the gimbal into the direction of the pressed button
  *  - When gimbal rotates at max speed, pressing the same button again stops the rotation
@@ -59,15 +61,18 @@
  */
 
 #define CHANNELS        3         // X21 works with 3 Channels
-#define CHANNEL_SIGNAL  3         // X21 Signal is on Channel 3
+#define CHANNEL_SIGNAL  2         // X21 Signal is on Channel 3
 
 /*
  * These are the Signal average Values for the Channel 3, which varies on the Video/Photo Buttons being pressed
  */
 
-#define SIGNAL_BASE    500
-#define SIGNAL_PHOTO   1100
-#define SIGNAL_VIDEO   1600
+#define SIGNAL_BASE    515
+#define SIGNAL_PHOTO   1080
+#define SIGNAL_VIDEO   1650
+#define SIGNAL_TOLERANCE 20
+#define DIVIDER        400
+#define DIVIDER_TOLERANCE 35
 
 // ****************** GLOBAL VARIABLES ******************
 
@@ -90,7 +95,8 @@ int Speeds[5] = {-SPEED2, -SPEED1, 0, SPEED1, SPEED2};
 int SpeedIndex = ZEROSPEEDINDEX;
 
 // Variables for PPM Processing
-volatile int Values[CHANNELS + 1] = {0};
+volatile int Values[CHANNELS] = {0};
+volatile int Dividers[CHANNELS + 1];
 
 // *****************************************************
 
@@ -124,24 +130,97 @@ void loop(){
     }
   }
 
+  int SyncLength = 0;
   // Wait for Sync on Signal
-  while(pulseIn(PPM_PIN, HIGH) < 2500){}
-  
-  // Processing PPM Signal
-  for (int Channel = 1; Channel <= CHANNELS; Channel++) {
-    Values[Channel] = pulseIn(PPM_PIN, HIGH);
+  // This new thing needed because we measured the length of the previous cycle's last LOW state.
+  // So, the expected current state is HIGH. (pulseIn() first waits for LOW, which is not out goal in this case.)
+  if (digitalRead(PPM_PIN) == HIGH)
+  {
+    // Measure HIGH state length
+    SyncLength = micros();
+    while (digitalRead(PPM_PIN) == HIGH)
+    {
+      delayMicroseconds(20);
+    }
+    SyncLength = micros() - SyncLength;
   }
+
+  if (SyncLength < 22000)
+    while(pulseIn(PPM_PIN, HIGH) < 22000){}
+
+  int LowStarted;
+  // Processing PPM Signal
+  for (int Channel = 0; Channel < CHANNELS; Channel++) {
+    LowStarted = micros();
+    Values[Channel] = pulseIn(PPM_PIN, HIGH);
+    Dividers[Channel] = micros() - LowStarted - Values[Channel];
+  }
+
+  // Measure last LOW state length
+  LowStarted = micros();
+  while (digitalRead(PPM_PIN) == LOW)
+  {    
+    delayMicroseconds(10);
+  }
+  Dividers[CHANNELS] = micros() - LowStarted;
 
   // Determinig the Sigal for easier handling
   int Signal = Values[CHANNEL_SIGNAL];
-  if (Signal <= 1800 && Signal >= 1500) {
+  int SignalDifference = Signal - SIGNAL_VIDEO;
+  if (abs(SignalDifference) < SIGNAL_TOLERANCE) {
     Signal = SIGNAL_VIDEO;
-  } else if (Signal <= 1200 && Signal >= 900) {
-    Signal = SIGNAL_PHOTO;
-  } else {
-    Signal = SIGNAL_BASE;
+  } else
+  {
+    SignalDifference = Signal - SIGNAL_PHOTO;
+    if (abs(SignalDifference) < SIGNAL_TOLERANCE) {
+      Signal = SIGNAL_PHOTO;    
+    } else {
+      SignalDifference = Signal - SIGNAL_BASE;
+      if (abs(SignalDifference) < SIGNAL_TOLERANCE) {
+        Signal = SIGNAL_BASE;
+      }
+      else
+      {
+        //Unrecognised signal length
+        Signal = LastSignal;
+        Serial.print("Unrecognised signal length ");
+        Serial.println(Values[CHANNEL_SIGNAL]);
+        
+      }
+    }
   }
 
+  //1st Garbage testing
+  //Check for signal lengths
+  for (int Channel = 0; Channel < CHANNELS; Channel++) {
+    //If any of the signal lengths fall out of the threshold, then it's a garbaged signal.
+    if (Values[Channel] < SIGNAL_BASE - SIGNAL_TOLERANCE || Values[Channel] > SIGNAL_VIDEO + SIGNAL_TOLERANCE)
+    {
+      //Drop garbage
+      Signal = LastSignal;
+      Serial.print("Signal dropped because signal length is ");
+      Serial.print(Values[Channel]);
+      Serial.println("usec");
+    } 
+  }
+
+  //2nd Garbage testing
+  //Check for dividers lengths
+  for (int Channel = 0; Channel < CHANNELS; Channel++) {
+    int DividerDifference = Dividers[Channel] - 400;
+    if (abs(DividerDifference) > DIVIDER_TOLERANCE)
+    {
+      Signal = LastSignal;
+      Serial.print("Signal dropped because dividerlength is ");
+      Serial.print(Dividers[Channel]);
+      Serial.print("usec. DividerNo: ");
+      Serial.println(Channel);
+    }
+  }
+
+  // Uncomment these to test your signal lengths
+  //Serial.print("Values[CHANNEL_SIGNAL] ");
+  //Serial.println(Values[CHANNEL_SIGNAL]);
 
   // Only do something whenever Signal changes
   if (LastSignal != Signal) {
@@ -151,6 +230,7 @@ void loop(){
      *  This is a bit tricky as there are only 3 Signal States and the SIGNAL_BASE is shared by both Buttons
      *  To solve this we need to maintain the State of the VideoMode as well as the LastSignal.
     */
+
     
     int KeyPressed;
     
@@ -180,7 +260,7 @@ void loop(){
         break;
     }
 
-    DebugPrintStates(KeyPressed, Signal, VideoMode);
+    DebugPrintStates(KeyPressed, Signal, VideoMode, Values[CHANNEL_SIGNAL]);
 
     if (GimbalMode == MODE_1_FIXED) {
       // MODE 1 - Using Fixed Values on Video Button / Toggle Control on Photo
@@ -244,17 +324,16 @@ void loop(){
   } else {
     Gimbal.writeMicroseconds(GimbalState += GimbalSteps);
   }
-  
 }
 
-void DebugPrintStates(int KeyPressed, int Signal, boolean VideoMode) {
+void DebugPrintStates(int KeyPressed, int Signal, boolean VideoMode, int SignalLength) {
     Serial.print("Key pressed: ");
     if (KeyPressed == SIGNAL_VIDEO) {
       Serial.print("VIDEO - ");
-      Serial.println(Signal);
+      Serial.println(SignalLength);
     } else {
       Serial.print("PHOTO - ");
-      Serial.println(Signal);
+      Serial.println(SignalLength);
     }
     Serial.print("Video Mode: ");
     if (VideoMode) {
